@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-worktree-guard"
+version = "0.1.0"
+description = "Protect pre-existing user working-tree changes around coding-agent runs."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "Manuel Sampedro" }
+]
+keywords = ["ai-agents", "codex", "git", "worktree", "verification"]
+
+[project.scripts]
+agent-worktree-guard = "agent_worktree_guard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
