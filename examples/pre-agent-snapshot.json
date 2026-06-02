@@ -1,0 +1,17 @@
+{
+  "created_at": "2026-06-02T00:00:00Z",
+  "dirty": [
+    {
+      "exists": true,
+      "path": "notes/user-draft.md",
+      "sha256": "6fcd5b97ad08b04f5a5d57463770c9fceba289557e65e79309b9e2c464e5e8a9",
+      "status": "??"
+    }
+  ],
+  "git": {
+    "branch": "main",
+    "head": "0000000000000000000000000000000000000000",
+    "root": "/example/repo"
+  },
+  "schema": "agent-worktree-guard/v1"
+}
