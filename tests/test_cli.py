@@ -1,3 +1,6 @@
+import contextlib
+import hashlib
+import io
 import json
 import os
 import subprocess
@@ -28,11 +31,21 @@ class WorktreeGuardTests(unittest.TestCase):
         self.snapshot_tmp.cleanup()
         self.tmp.cleanup()
 
+    def call_cli(self, args):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = cli.main(args)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
     def snapshot_path(self):
         path = Path(self.snapshot_tmp.name) / "snapshot.json"
-        rc = cli.main(["snapshot", "--base-dir", str(self.repo), "--output", str(path)])
+        rc, _, _ = self.call_cli(["snapshot", "--base-dir", str(self.repo), "--output", str(path)])
         self.assertEqual(rc, 0)
         return path
+
+    def snapshot_hash(self, path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def test_snapshot_records_dirty_file_hashes(self):
         notes = self.repo / "notes"
@@ -57,7 +70,7 @@ class WorktreeGuardTests(unittest.TestCase):
         src.mkdir()
         (src / "change.py").write_text("print('agent')\n", encoding="utf-8")
 
-        rc = cli.main(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "src/**"])
+        rc, _, _ = self.call_cli(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "src/**"])
 
         self.assertEqual(rc, 0)
 
@@ -70,7 +83,7 @@ class WorktreeGuardTests(unittest.TestCase):
 
         draft.write_text("agent touched this\n", encoding="utf-8")
 
-        rc = cli.main(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "src/**"])
+        rc, _, _ = self.call_cli(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "src/**"])
 
         self.assertEqual(rc, 1)
 
@@ -79,7 +92,7 @@ class WorktreeGuardTests(unittest.TestCase):
         (self.repo / "scripts").mkdir()
         (self.repo / "scripts" / "deploy.sh").write_text("#!/bin/sh\n", encoding="utf-8")
 
-        rc = cli.main(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "src/**"])
+        rc, _, _ = self.call_cli(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "src/**"])
 
         self.assertEqual(rc, 1)
 
@@ -87,9 +100,81 @@ class WorktreeGuardTests(unittest.TestCase):
         snapshot = self.snapshot_path()
         (self.repo / "README.md").write_text("changed\n", encoding="utf-8")
 
-        rc = cli.main(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "README.md", "--format", "json"])
+        rc, stdout, _ = self.call_cli(["check", str(snapshot), "--base-dir", str(self.repo), "--allow", "README.md", "--format", "json"])
 
         self.assertEqual(rc, 0)
+        report = json.loads(stdout)
+        self.assertEqual(report["snapshot_sha256"], self.snapshot_hash(snapshot))
+
+    def test_check_accepts_expected_snapshot_hash(self):
+        notes = self.repo / "notes"
+        notes.mkdir()
+        (notes / "draft.md").write_text("user draft\n", encoding="utf-8")
+        snapshot = self.snapshot_path()
+        expected_hash = self.snapshot_hash(snapshot)
+
+        src = self.repo / "src"
+        src.mkdir()
+        (src / "change.py").write_text("print('agent')\n", encoding="utf-8")
+
+        rc, _, _ = self.call_cli(
+            [
+                "check",
+                str(snapshot),
+                "--base-dir",
+                str(self.repo),
+                "--allow",
+                "src/**",
+                "--expect-snapshot-sha256",
+                expected_hash,
+            ]
+        )
+
+        self.assertEqual(rc, 0)
+
+    def test_check_blocks_tampered_snapshot_when_hash_is_expected(self):
+        notes = self.repo / "notes"
+        notes.mkdir()
+        draft = notes / "draft.md"
+        draft.write_text("user draft\n", encoding="utf-8")
+        snapshot = self.snapshot_path()
+        expected_hash = self.snapshot_hash(snapshot)
+
+        tampered = json.loads(snapshot.read_text(encoding="utf-8"))
+        tampered["dirty"] = []
+        snapshot.write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        draft.write_text("agent touched this\n", encoding="utf-8")
+
+        rc, _, _ = self.call_cli(
+            [
+                "check",
+                str(snapshot),
+                "--base-dir",
+                str(self.repo),
+                "--allow",
+                "src/**",
+                "--expect-snapshot-sha256",
+                expected_hash,
+            ]
+        )
+
+        self.assertEqual(rc, 2)
+
+    def test_check_rejects_invalid_expected_snapshot_hash(self):
+        snapshot = self.snapshot_path()
+
+        rc, _, _ = self.call_cli(
+            [
+                "check",
+                str(snapshot),
+                "--base-dir",
+                str(self.repo),
+                "--expect-snapshot-sha256",
+                "not-a-sha",
+            ]
+        )
+
+        self.assertEqual(rc, 2)
 
     def test_module_exit_code_blocks_drift(self):
         notes = self.repo / "notes"

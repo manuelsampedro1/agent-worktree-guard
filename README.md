@@ -29,15 +29,21 @@ Take a snapshot before handing a dirty repo to an agent:
 PYTHONPATH=src python3 -m agent_worktree_guard snapshot --output /tmp/worktree-snapshot.json
 ```
 
+The command prints a snapshot SHA-256. Copy that digest into the handoff,
+task contract, or run ledger when you need to prove the later check used the
+same snapshot.
+
 After the run, allow only the expected paths and check for drift:
 
 ```sh
 PYTHONPATH=src python3 -m agent_worktree_guard check /tmp/worktree-snapshot.json \
+  --expect-snapshot-sha256 "<snapshot-sha256>" \
   --allow "src/**" \
   --allow "tests/**"
 ```
 
 If a pre-existing user change was edited or removed, or if a new dirty path appears outside the allowlist, the command exits non-zero.
+If the snapshot file was edited after the pre-agent capture, `--expect-snapshot-sha256` blocks the check before it can trust the modified snapshot.
 
 ## Example Output
 
@@ -50,6 +56,10 @@ Verdict: `blocked`
 
 - Protected file drifted: `notes/user-draft.md`
 - Unexpected dirty path outside allowlist: `scripts/deploy.sh`
+
+## Snapshot Evidence
+
+- SHA-256: `8c6a2f2b2a8d6b3d0b1c5c2f4a7c7a0e5f6d0d4c8a9b1e2f3a4c5d6e7f8091a2`
 ```
 
 ## Commands
@@ -77,6 +87,7 @@ Useful options:
 - `--allow`: file or glob the current task is allowed to change. Repeatable.
 - `--format json`: machine-readable verdict.
 - `--allow-head-change`: do not warn if HEAD changed after the snapshot.
+- `--expect-snapshot-sha256`: block if the snapshot file no longer matches the digest captured before the agent run.
 - `--base-dir`: repo directory to inspect.
 
 ## Development

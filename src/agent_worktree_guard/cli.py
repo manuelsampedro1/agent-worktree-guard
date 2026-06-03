@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 VALID_FORMATS = {"markdown", "json"}
+HEX_DIGITS = set("0123456789abcdefABCDEF")
 
 
 class GuardError(RuntimeError):
@@ -60,6 +61,24 @@ def sha256_file(path: Path) -> Optional[str]:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_existing_file(path: Path) -> str:
+    if not path.exists():
+        raise GuardError(f"Snapshot file not found: {path}")
+    if not path.is_file():
+        raise GuardError(f"Snapshot path is not a file: {path}")
+    digest = sha256_file(path)
+    if digest is None:
+        raise GuardError(f"Could not hash snapshot file: {path}")
+    return digest
+
+
+def normalize_expected_sha256(value: str) -> str:
+    expected = value.strip()
+    if len(expected) != 64 or any(char not in HEX_DIGITS for char in expected):
+        raise GuardError("--expect-snapshot-sha256 must be a 64-character hex SHA-256 digest")
+    return expected.lower()
 
 
 def normalize_path(path: str) -> str:
@@ -125,6 +144,8 @@ def write_json(data: Dict[str, Any], output: Optional[Path]) -> None:
 def load_snapshot(path: Path) -> Dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise GuardError(f"Could not read snapshot JSON: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise GuardError(f"Invalid snapshot JSON: {exc}") from exc
     if data.get("schema") != "agent-worktree-guard/v1":
@@ -156,6 +177,7 @@ def compare_snapshot(
     base_dir: Path,
     allow: Sequence[str],
     allow_head_change: bool,
+    snapshot_sha256: str,
 ) -> Dict[str, Any]:
     root = git_root(base_dir)
     current = current_entry_map(root)
@@ -192,6 +214,7 @@ def compare_snapshot(
         "schema": "agent-worktree-guard/report/v1",
         "verdict": verdict,
         "base_dir": str(root),
+        "snapshot_sha256": snapshot_sha256,
         "allowed": list(allow),
         "protected_paths": sorted(path for path in before if not matches_any(path, allow)),
         "current_dirty_paths": sorted(current),
@@ -218,6 +241,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.extend(f"- {warning}" for warning in report["warnings"])
     else:
         lines.append("- none")
+    lines.extend(["", "## Snapshot Evidence", "", f"- SHA-256: `{report['snapshot_sha256']}`"])
     lines.extend(["", "## Allowed Paths", ""])
     if report["allowed"]:
         lines.extend(f"- `{pattern}`" for pattern in report["allowed"])
@@ -240,15 +264,24 @@ def emit_report(report: Dict[str, Any], output_format: str) -> None:
 
 def snapshot_command(args: argparse.Namespace) -> int:
     snapshot = make_snapshot(Path(args.base_dir))
-    write_json(snapshot, Path(args.output) if args.output else None)
+    output_path = Path(args.output) if args.output else None
+    write_json(snapshot, output_path)
     if args.output:
+        snapshot_sha256 = sha256_existing_file(output_path)
         print(f"Wrote snapshot with {len(snapshot['dirty'])} dirty path(s): {args.output}")
+        print(f"Snapshot SHA-256: {snapshot_sha256}")
     return 0
 
 
 def check_command(args: argparse.Namespace) -> int:
-    snapshot = load_snapshot(Path(args.snapshot))
-    report = compare_snapshot(snapshot, Path(args.base_dir), args.allow, args.allow_head_change)
+    snapshot_path = Path(args.snapshot)
+    snapshot_sha256 = sha256_existing_file(snapshot_path)
+    if args.expect_snapshot_sha256:
+        expected_sha256 = normalize_expected_sha256(args.expect_snapshot_sha256)
+        if snapshot_sha256 != expected_sha256:
+            raise GuardError(f"Snapshot hash mismatch: expected {expected_sha256}, got {snapshot_sha256}")
+    snapshot = load_snapshot(snapshot_path)
+    report = compare_snapshot(snapshot, Path(args.base_dir), args.allow, args.allow_head_change, snapshot_sha256)
     emit_report(report, args.format)
     return 1 if report["issues"] else 0
 
@@ -267,6 +300,10 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--base-dir", default=".", help="Git repository directory to inspect.")
     check_parser.add_argument("--allow", action="append", default=[], help="Allowed file or glob. Repeatable.")
     check_parser.add_argument("--allow-head-change", action="store_true", help="Do not warn when HEAD changed.")
+    check_parser.add_argument(
+        "--expect-snapshot-sha256",
+        help="Expected SHA-256 digest of the snapshot file. Blocks tampered or stale snapshots before comparison.",
+    )
     check_parser.add_argument("--format", choices=sorted(VALID_FORMATS), default="markdown")
     check_parser.set_defaults(func=check_command)
 
